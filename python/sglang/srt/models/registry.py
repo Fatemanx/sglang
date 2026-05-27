@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 class _ModelRegistry:
     # Keyed by model_arch
     models: Dict[str, Union[Type[nn.Module], str]] = field(default_factory=dict)
+    _base_package_registered: bool = False
 
     def register(
         self, package_name: str, overwrite: bool = False, strict: bool = False
@@ -32,8 +33,18 @@ class _ModelRegistry:
                         f"Model architecture {arch} already registered. Set overwrite=True to replace."
                     )
                 self.models[arch] = cls
+        if package_name == "sglang.srt.models":
+            self._base_package_registered = True
+
+    def _ensure_base_models_registered(self):
+        if self._base_package_registered:
+            return
+        self.register("sglang.srt.models")
+        if external_pkg := envs.SGLANG_EXTERNAL_MODEL_PACKAGE.get():
+            self.register(external_pkg, overwrite=True)
 
     def get_supported_archs(self) -> AbstractSet[str]:
+        self._ensure_base_models_registered()
         return self.models.keys()
 
     def _raise_for_unsupported(self, architectures: List[str]):
@@ -51,6 +62,7 @@ class _ModelRegistry:
         )
 
     def _try_load_model_cls(self, model_arch: str) -> Optional[Type[nn.Module]]:
+        self._ensure_base_models_registered()
         if model_arch not in self.models:
             return None
 
@@ -126,7 +138,3 @@ def import_model_classes(package_name: str, strict: bool = False):
 
 
 ModelRegistry = _ModelRegistry()
-ModelRegistry.register("sglang.srt.models")
-
-if external_pkg := envs.SGLANG_EXTERNAL_MODEL_PACKAGE.get():
-    ModelRegistry.register(external_pkg, overwrite=True)

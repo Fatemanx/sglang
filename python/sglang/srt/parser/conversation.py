@@ -875,6 +875,19 @@ register_conv_template(
 
 register_conv_template(
     Conversation(
+        name="bagel-chatml",
+        system_message="You are a helpful assistant.",
+        system_template="<|im_start|>system\n{system_message}",
+        roles=("<|im_start|>user", "<|im_start|>assistant"),
+        sep="<|im_end|>\n",
+        sep_style=SeparatorStyle.ADD_NEW_LINE_SINGLE,
+        stop_str=["<|im_end|>"],
+        image_token="<|vision_start|><|image_pad|><|vision_end|>",
+    )
+)
+
+register_conv_template(
+    Conversation(
         name="deepseek-ocr",
         system_message="",
         system_template="",
@@ -1070,6 +1083,7 @@ register_conv_template(
 MODEL_TYPE_TO_TEMPLATE = {
     "internvl_chat": "internvl-2-5",
     "deepseek_vl_v2": "deepseek-vl2",
+    "bagel": "bagel-chatml",
     "multi_modality": "janus-pro",
     "phi4mm": "phi-4-mm",
     "minicpmv": "minicpmv",
@@ -1120,6 +1134,14 @@ def match_internvl(model_path: str):
 def match_deepseek_janus_pro(model_path: str):
     if re.search(r"janus", model_path, re.IGNORECASE):
         return "janus-pro"
+    model_type = get_model_type(model_path)
+    return MODEL_TYPE_TO_TEMPLATE.get(model_type)
+
+
+@register_conv_template_matching_function
+def match_bagel(model_path: str):
+    if re.search(r"bagel", model_path, re.IGNORECASE):
+        return "bagel-chatml"
     model_type = get_model_type(model_path)
     return MODEL_TYPE_TO_TEMPLATE.get(model_type)
 

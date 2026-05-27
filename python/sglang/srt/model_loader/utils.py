@@ -191,9 +191,24 @@ def resolve_transformers_arch(model_config: ModelConfig, architectures: list[str
 
 
 def get_model_architecture(model_config: ModelConfig) -> Tuple[Type[nn.Module], str]:
-    from sglang.srt.models.registry import ModelRegistry
-
     architectures = getattr(model_config.hf_config, "architectures", [])
+
+    # BAGEL currently routes through the transformers backend wrapper.
+    # Bypass the global model registry scan so BAGEL startup does not depend on
+    # importing every optional model backend module.
+    if "BagelForConditionalGeneration" in architectures:
+        from sglang.srt.models.bagel import BagelForConditionalGeneration
+
+        resolved_arch = "BagelForConditionalGeneration"
+        setattr(model_config, "_resolved_model_arch", resolved_arch)
+        setattr(
+            model_config,
+            "_resolved_model_impl",
+            _model_impl_from_architecture(resolved_arch),
+        )
+        return BagelForConditionalGeneration, resolved_arch
+
+    from sglang.srt.models.registry import ModelRegistry
     # Special handling for quantized Mixtral.
     # FIXME(woosuk): This is a temporary hack.
     mixtral_supported = [

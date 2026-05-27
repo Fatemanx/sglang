@@ -23,6 +23,7 @@ from huggingface_hub import snapshot_download
 
 from sglang.srt.configs import (
     AfmoeConfig,
+    BagelConfig,
     BailingHybridConfig,
     ChatGLMConfig,
     DbrxConfig,
@@ -70,6 +71,7 @@ _CONFIG_REGISTRY: Dict[str, Type[PretrainedConfig]] = {
     cls.model_type: cls
     for cls in [
         AfmoeConfig,
+        BagelConfig,
         BailingHybridConfig,
         ChatGLMConfig,
         DbrxConfig,

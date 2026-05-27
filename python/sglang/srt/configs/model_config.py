@@ -1402,6 +1402,7 @@ multimodal_model_archs = [
     "LlavaVidForCausalLM",
     "Lfm2VlForConditionalGeneration",
     "LightOnOCRForConditionalGeneration",
+    "BagelForConditionalGeneration",
     *MIMO_V2_MULTIMODAL_ARCHS,
     "MiniCPMO",
     "MiniCPMV",
@@ -1448,6 +1449,7 @@ piecewise_cuda_graph_disabled_model_archs = [
     "Qwen3NextForCausalLM",
     "GlmMoeDsaForCausalLM",
     "BailingMoeV2_5ForCausalLM",
+    "BagelForConditionalGeneration",
     "LLaDAModelLM",
 ]
 

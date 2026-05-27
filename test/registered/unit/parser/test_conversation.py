@@ -790,6 +790,11 @@ class TestTemplateRegistry(CustomTestCase):
         result = get_conv_template_by_model_path("deepseek-ai/Janus-Pro-7B")
         self.assertEqual(result, "janus-pro")
 
+    def test_get_conv_template_by_model_path_bagel(self):
+        """Test that bagel model path is matched correctly."""
+        result = get_conv_template_by_model_path("ByteDance-Seed/BAGEL-7B-MoT")
+        self.assertEqual(result, "bagel-chatml")
+
     def test_get_conv_template_by_model_path_phi4_mm(self):
         """Test that phi-4-multimodal model path is matched correctly."""
         result = get_conv_template_by_model_path("microsoft/phi-4-multimodal")

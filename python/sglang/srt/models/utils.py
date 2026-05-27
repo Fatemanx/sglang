@@ -195,7 +195,14 @@ class AutoWeightsLoader:
                 )
 
             weight_loader = getattr(param, "weight_loader", default_weight_loader)
-            weight_loader(param, weight_data)
+            try:
+                weight_loader(param, weight_data)
+            except Exception as e:
+                raise type(e)(
+                    f"Failed to load weight {weight_qualname!r}: "
+                    f"checkpoint shape={tuple(weight_data.size())}, "
+                    f"target shape={tuple(param.size())}. Original error: {e}"
+                ) from e
             yield weight_qualname
 
     def _load_module(

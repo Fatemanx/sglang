@@ -16,12 +16,17 @@
 # https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/models/transformers
 """Wrapper around `transformers` models."""
 
+import importlib
 import inspect
 import logging
+import os
 import re
+import sys
 from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
-from typing import List, Literal, Optional, Tuple, Union
+from pathlib import Path
+from types import MethodType, SimpleNamespace
+from typing import Any, List, Literal, Optional, Tuple, Union
 
 import torch
 import transformers
@@ -46,10 +51,6 @@ from sglang.srt.layers.linear import (
     RowParallelLinear,
 )
 from sglang.srt.layers.logits_processor import LogitsProcessor, LogitsProcessorOutput
-from sglang.srt.layers.moe.ep_moe.layer import get_moe_impl_class
-from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
-from sglang.srt.layers.moe.topk import StandardTopKOutput
-from sglang.srt.layers.moe.utils import filter_moe_weight_param_global_expert
 from sglang.srt.layers.pooler import EmbeddingPoolerOutput, Pooler, PoolingType
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.layers.radix_attention import RadixAttention
@@ -98,6 +99,30 @@ logger = logging.getLogger(__name__)
 _TRANSFORMERS_MOE_LAYERS: dict[str, "TransformersFusedMoE"] = {}
 
 
+def _get_moe_impl_class(*args, **kwargs):
+    from sglang.srt.layers.moe.ep_moe.layer import get_moe_impl_class
+
+    return get_moe_impl_class(*args, **kwargs)
+
+
+def _get_fused_moe_cls():
+    from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
+
+    return FusedMoE
+
+
+def _make_standard_topk_output(*args, **kwargs):
+    from sglang.srt.layers.moe.topk import StandardTopKOutput
+
+    return StandardTopKOutput(*args, **kwargs)
+
+
+def _filter_moe_weight_param(*args, **kwargs):
+    from sglang.srt.layers.moe.utils import filter_moe_weight_param_global_expert
+
+    return filter_moe_weight_param_global_expert(*args, **kwargs)
+
+
 def maybe_prefix(prefix: str, name: str) -> str:
     return name if not prefix else f"{prefix}.{name}"
 
@@ -136,6 +161,152 @@ def _resolve_attention_backend_model_cls(config: PretrainedConfig):
                 e,
             )
     return None
+
+
+def _config_to_dict(config: Any) -> dict[str, Any]:
+    if config is None:
+        return {}
+    if hasattr(config, "to_dict"):
+        return config.to_dict()
+    if isinstance(config, Mapping):
+        return dict(config)
+    raise TypeError(f"Unsupported config type for BAGEL upstream bridge: {type(config)}")
+
+
+@contextmanager
+def _maybe_add_bagel_source_root():
+    """Temporarily expose an upstream BAGEL source checkout for imports."""
+    source_root = os.environ.get("SGLANG_BAGEL_SOURCE_ROOT")
+    if not source_root:
+        yield
+        return
+
+    source_root_path = str(Path(source_root).expanduser().resolve())
+    added = False
+    if source_root_path not in sys.path:
+        sys.path.insert(0, source_root_path)
+        added = True
+    try:
+        importlib.invalidate_caches()
+        yield
+    finally:
+        if added:
+            try:
+                sys.path.remove(source_root_path)
+            except ValueError:
+                pass
+
+
+def _build_upstream_bagel_model(config: PretrainedConfig) -> PreTrainedModel:
+    """Build BAGEL from the official modeling package when available.
+
+    The local HF checkpoint only provides weights/config. The actual BAGEL model
+    implementation lives in the upstream ByteDance BAGEL repository.
+    """
+    err_msg = (
+        "BAGEL support requires the official BAGEL modeling sources on "
+        "PYTHONPATH. The local checkpoint only contains weights/config. "
+        "Make the upstream `modeling/` package importable before serving BAGEL, "
+        "or set `SGLANG_BAGEL_SOURCE_ROOT` to the upstream BAGEL repo root."
+    )
+    try:
+        with _maybe_add_bagel_source_root():
+            bagel_mod = importlib.import_module("modeling.bagel")
+    except ImportError as e:
+        raise ImportError(err_msg) from e
+
+    try:
+        UpstreamBagel = getattr(bagel_mod, "Bagel")
+        UpstreamBagelConfig = getattr(bagel_mod, "BagelConfig")
+        UpstreamQwen2Config = getattr(bagel_mod, "Qwen2Config")
+        UpstreamQwen2ForCausalLM = getattr(bagel_mod, "Qwen2ForCausalLM")
+        UpstreamSiglipVisionConfig = getattr(bagel_mod, "SiglipVisionConfig")
+        UpstreamSiglipVisionModel = getattr(bagel_mod, "SiglipVisionModel")
+    except AttributeError as e:
+        raise ImportError(
+            f"{err_msg} Found `modeling.bagel`, but it is incomplete."
+        ) from e
+
+    model_path = getattr(config, "_name_or_path", "")
+    llm_config_path = Path(model_path) / "llm_config.json" if model_path else None
+    vit_config_path = Path(model_path) / "vit_config.json" if model_path else None
+
+    if llm_config_path and llm_config_path.is_file():
+        llm_config = UpstreamQwen2Config.from_json_file(str(llm_config_path))
+    else:
+        llm_config = UpstreamQwen2Config(
+            **_config_to_dict(getattr(config, "llm_config", None))
+        )
+    if getattr(llm_config, "pad_token_id", None) is None:
+        llm_config.pad_token_id = (
+            getattr(getattr(config, "llm_config", None), "pad_token_id", None)
+            or getattr(config, "pad_token_id", None)
+            or getattr(llm_config, "bos_token_id", None)
+            or getattr(llm_config, "eos_token_id", None)
+        )
+    llm_config.qk_norm = True
+    llm_config.tie_word_embeddings = False
+    llm_config.layer_module = "Qwen2MoTDecoderLayer"
+
+    if vit_config_path and vit_config_path.is_file():
+        vit_config = UpstreamSiglipVisionConfig.from_json_file(str(vit_config_path))
+    else:
+        vit_config = UpstreamSiglipVisionConfig(
+            **_config_to_dict(getattr(config, "vit_config", None))
+        )
+    vit_config.rope = False
+    if getattr(vit_config, "num_hidden_layers", 0) > 0:
+        vit_config.num_hidden_layers -= 1
+
+    upstream_config = UpstreamBagelConfig(
+        visual_gen=False,
+        visual_und=bool(getattr(config, "visual_und", True)),
+        llm_config=llm_config,
+        vit_config=vit_config,
+        vae_config=SimpleNamespace(**_config_to_dict(getattr(config, "vae_config", None))),
+        vit_max_num_patch_per_side=getattr(config, "vit_max_num_patch_per_side", 70),
+        connector_act=getattr(config, "connector_act", "gelu_pytorch_tanh"),
+        latent_patch_size=getattr(config, "latent_patch_size", 2),
+        max_latent_size=getattr(config, "max_latent_size", 64),
+        torch_dtype=getattr(config, "torch_dtype", None),
+    )
+
+    with _init_on_device_without_buffers(torch.device("meta")):
+        language_model = UpstreamQwen2ForCausalLM(llm_config)
+        vit_model = UpstreamSiglipVisionModel(vit_config)
+        model: PreTrainedModel = UpstreamBagel(
+            language_model=language_model,
+            vit_model=vit_model,
+            config=upstream_config,
+        )
+        embeddings = getattr(
+            getattr(getattr(model, "vit_model", None), "vision_model", None),
+            "embeddings",
+            None,
+        )
+        if embeddings is not None and hasattr(embeddings, "convert_conv2d_to_linear"):
+            embeddings.convert_conv2d_to_linear(vit_config, meta=True)
+
+    language_model = getattr(model, "language_model", None)
+    if language_model is not None:
+        model.get_input_embeddings = MethodType(
+            lambda self: self.language_model.get_input_embeddings(),
+            model,
+        )
+        model.set_input_embeddings = MethodType(
+            lambda self, value: self.language_model.set_input_embeddings(value),
+            model,
+        )
+        model.get_output_embeddings = MethodType(
+            lambda self: self.language_model.get_output_embeddings(),
+            model,
+        )
+        model.set_output_embeddings = MethodType(
+            lambda self, value: self.language_model.set_output_embeddings(value),
+            model,
+        )
+
+    return model
 
 
 def _encoder_accepts_feature_kwarg(encoder, feature_kwarg: str) -> bool:
@@ -350,7 +521,7 @@ class TransformersFusedMoE(nn.Module):
     ) -> None:
         super().__init__()
         num_redundant = get_global_server_args().ep_num_redundant_experts
-        experts_cls = get_moe_impl_class(quant_config)
+        experts_cls = _get_moe_impl_class(quant_config)
         self.experts = experts_cls(
             num_experts=num_experts + num_redundant,
             top_k=top_k,
@@ -393,7 +564,7 @@ class TransformersFusedMoE(nn.Module):
             x.data
             for name, x in self.experts.named_parameters()
             if name not in ("correction_bias",)
-            and filter_moe_weight_param_global_expert(name, x, num_local)
+            and _filter_moe_weight_param(name, x, num_local)
         ]
 
     def forward(
@@ -482,7 +653,7 @@ def _transformers_moe_forward(
     recorder = get_global_expert_distribution_recorder()
     with recorder.with_current_layer(self.experts.layer_id):
         recorder.on_select_experts(topk_ids=topk_ids)
-    topk_output = StandardTopKOutput(
+    topk_output = _make_standard_topk_output(
         topk_weights=topk_weights,
         topk_ids=topk_ids,
         router_logits=topk_weights,
@@ -580,6 +751,12 @@ class TransformersBase(nn.Module):
         self.ignore_unexpected_suffixes: list[str] = []
         self.skip_substrs.extend([".attn.bias", ".attn.masked_bias", ".masked_bias"])
         self.ignore_unexpected_prefixes.extend(["classifier.", "score."])
+        if getattr(self.config, "model_type", None) == "bagel":
+            # Understanding-only BAGEL serving does not instantiate the
+            # standalone autoencoder modules used for image generation.
+            self.ignore_unexpected_prefixes.extend(
+                ["model.decoder.", "model.encoder."]
+            )
 
         if self.quant_config is not None:
             quant_method_name = self.quant_config.get_name()
@@ -609,12 +786,15 @@ class TransformersBase(nn.Module):
         # Initialize on meta device to avoid premature GPU allocation
         self.text_config._attn_implementation = "sglang"
         if supports_backend:
-            with _init_on_device_without_buffers(torch.device("meta")):
-                self.model: PreTrainedModel = AutoModel.from_config(
-                    self.config,
-                    torch_dtype=torch.get_default_dtype(),
-                    trust_remote_code=True,
-                )
+            if getattr(self.config, "model_type", None) == "bagel":
+                self.model = _build_upstream_bagel_model(self.config)
+            else:
+                with _init_on_device_without_buffers(torch.device("meta")):
+                    self.model: PreTrainedModel = AutoModel.from_config(
+                        self.config,
+                        torch_dtype=torch.get_default_dtype(),
+                        trust_remote_code=True,
+                    )
         else:
             raise ValueError(
                 f"Model {model_cls} does not support custom attention backends "
@@ -1171,7 +1351,7 @@ class MoEMixin:
         mapping: list = []
         for gate, down, up in ckpt_names:
             mapping.extend(
-                FusedMoE.make_expert_params_mapping(
+                _get_fused_moe_cls().make_expert_params_mapping(
                     ckpt_gate_proj_name=gate,
                     ckpt_down_proj_name=down,
                     ckpt_up_proj_name=up,

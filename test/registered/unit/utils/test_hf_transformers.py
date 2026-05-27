@@ -10,6 +10,8 @@ from types import SimpleNamespace
 
 from transformers import PretrainedConfig
 
+from sglang.srt.configs.bagel import BagelConfig
+from sglang.srt.models.transformers import _build_upstream_bagel_model
 from sglang.srt.utils.hf_transformers.common import (
     _is_deepseek_ocr2_model,
     _is_deepseek_ocr_model,
@@ -154,6 +156,50 @@ class TestPatchTextConfig(unittest.TestCase):
         _patch_text_config(parent, text)
         self.assertEqual(parent.pad_token_id, 0)
         self.assertEqual(text.pad_token_id, 99)
+
+
+class TestBagelConfig(unittest.TestCase):
+    def test_normalizes_architecture_name(self):
+        cfg = BagelConfig(architectures=["Bagel"])
+        self.assertEqual(cfg.architectures, ["BagelForConditionalGeneration"])
+
+    def test_exposes_llm_config_as_text_config(self):
+        cfg = BagelConfig(
+            llm_config={
+                "hidden_size": 4096,
+                "vocab_size": 1000,
+                "num_attention_heads": 32,
+            }
+        )
+        self.assertIs(cfg.text_config, cfg.llm_config)
+        self.assertEqual(cfg.llm_config.hidden_size, 4096)
+        self.assertEqual(get_hf_text_config(cfg).vocab_size, 1000)
+
+    def test_requires_upstream_modeling_package(self):
+        cfg = BagelConfig(
+            llm_config={
+                "hidden_size": 4096,
+                "vocab_size": 1000,
+                "num_attention_heads": 32,
+                "num_hidden_layers": 1,
+                "intermediate_size": 11008,
+            },
+            vit_config={
+                "hidden_size": 1152,
+                "num_hidden_layers": 2,
+                "num_attention_heads": 16,
+                "intermediate_size": 4304,
+                "image_size": 980,
+                "patch_size": 14,
+                "num_channels": 3,
+            },
+            vae_config={"z_channels": 16, "downsample": 8},
+        )
+
+        with self.assertRaisesRegex(
+            ImportError, "official BAGEL modeling sources on PYTHONPATH"
+        ):
+            _build_upstream_bagel_model(cfg)
 
 
 # ---------------------------------------------------------------------------
