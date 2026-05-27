@@ -215,6 +215,8 @@ class Fp8GemmRunnerBackend(Enum):
 
 
 FP8_GEMM_RUNNER_BACKEND: Fp8GemmRunnerBackend | None = None
+_FLASHINFER_MXFP8_IMPORT_ERROR: ImportError | None = None
+_FLASHINFER_MXFP8_AVAILABLE = False
 
 
 def _check_cutlass_block_fp8_hardware_support() -> bool:
@@ -223,10 +225,20 @@ def _check_cutlass_block_fp8_hardware_support() -> bool:
 
 
 if is_blackwell_supported() and is_flashinfer_available():
-    from flashinfer import SfLayout
-    from flashinfer import mm_mxfp8 as _raw_flashinfer_mm_mxfp8
-    from flashinfer import mxfp8_quantize as _raw_flashinfer_mxfp8_quantize
     from flashinfer.gemm import gemm_fp8_nt_groupwise as _raw_gemm_fp8_nt_groupwise
+    try:
+        from flashinfer import SfLayout
+        from flashinfer import mm_mxfp8 as _raw_flashinfer_mm_mxfp8
+        from flashinfer import mxfp8_quantize as _raw_flashinfer_mxfp8_quantize
+    except ImportError as exc:
+        _FLASHINFER_MXFP8_IMPORT_ERROR = exc
+        logger.warning(
+            "FlashInfer is available but MXFP8 symbols are incomplete; disabling "
+            "the FlashInfer MXFP8 path. Import error: %s",
+            exc,
+        )
+    else:
+        _FLASHINFER_MXFP8_AVAILABLE = True
 
     from sglang.srt.utils.custom_op import register_custom_op
 
@@ -309,6 +321,8 @@ if is_blackwell_supported() and is_flashinfer_available():
         is_sf_swizzled_layout: bool = True,
         alignment: int = 32,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if not _FLASHINFER_MXFP8_AVAILABLE:
+            _raise_missing_flashinfer_mxfp8()
         return _raw_flashinfer_mxfp8_quantize(
             input,
             is_sf_swizzled_layout=is_sf_swizzled_layout,
@@ -332,6 +346,8 @@ if is_blackwell_supported() and is_flashinfer_available():
         use_8x4_sf_layout: bool = False,
         backend: str = "auto",
     ) -> torch.Tensor:
+        if not _FLASHINFER_MXFP8_AVAILABLE:
+            _raise_missing_flashinfer_mxfp8()
         return _raw_flashinfer_mm_mxfp8(
             q_input,
             weight_t,
@@ -346,6 +362,14 @@ if is_blackwell_supported() and is_flashinfer_available():
 if is_sm90_supported() and is_flashinfer_available():
     # FlashInfer SM90 DeepGEMM with automatic swapAB optimization for small M
     from flashinfer.gemm import fp8_blockscale_gemm_sm90
+
+
+def _raise_missing_flashinfer_mxfp8() -> None:
+    raise RuntimeError(
+        "FlashInfer MXFP8 backend was requested, but the installed flashinfer "
+        "package does not provide the required MXFP8 symbols "
+        "(`mxfp8_quantize` / `mm_mxfp8`)."
+    ) from _FLASHINFER_MXFP8_IMPORT_ERROR
 
 
 def dispatch_w8a8_block_fp8_linear() -> Callable:
@@ -374,8 +398,12 @@ def dispatch_w8a8_mxfp8_linear() -> Callable:
     """
     backend = get_fp8_gemm_runner_backend()
     if backend.is_flashinfer_trtllm():
+        if not _FLASHINFER_MXFP8_AVAILABLE:
+            _raise_missing_flashinfer_mxfp8()
         return flashinfer_mxfp8_blockscaled_linear
     elif backend.is_flashinfer_cutlass():
+        if not _FLASHINFER_MXFP8_AVAILABLE:
+            _raise_missing_flashinfer_mxfp8()
         return flashinfer_mxfp8_blockscaled_linear
     return triton_mxfp8_blockscaled_linear
 

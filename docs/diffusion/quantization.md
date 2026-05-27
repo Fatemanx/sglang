@@ -34,6 +34,11 @@ directory directly as `--model-path`, but that is a compatibility path. If a
 repo contains multiple candidate checkpoints, pass
 `--transformer-weights-path` explicitly.
 
+If both transformer override flags are provided, SGLang resolves the component
+directory and its `config.json` from `--transformer-path`, while
+`--transformer-weights-path` only overrides which transformer safetensors files
+are loaded for that component.
+
 ## Quant Families
 
 Here, `quant_family` means a checkpoint and loading family with shared CLI
@@ -51,7 +56,8 @@ backend.
 ## Validated ModelOpt Checkpoints
 
 This section is the canonical support matrix for the six diffusion ModelOpt
-checkpoints currently wired up in SGLang docs and B200 CI coverage.
+checkpoints currently wired up in SGLang docs and smoke/regression test
+configs.
 
 Published checkpoints keep the serialized quantization config as
 `quant_method=modelopt`; the FP8 vs NVFP4 split below is a documentation label
@@ -69,8 +75,8 @@ official `black-forest-labs/FLUX.2-dev-NVFP4` repo.
 | `NVFP4` | `black-forest-labs/FLUX.2-dev` | `--transformer-weights-path` | `black-forest-labs/FLUX.2-dev-NVFP4` | packed-QKV load path | official raw export repo; validated packed export detection and runtime layout handling |
 | `NVFP4` | `Wan-AI/Wan2.2-T2V-A14B-Diffusers` | `--transformer-path` | `BBuf/wan22-t2v-a14b-modelopt-nvfp4-sglang-transformer` | primary `transformer` quantized with ModelOpt NVFP4, `transformer_2` kept BF16 | primary-transformer-only path; keep `transformer_2` on the base checkpoint, and current B200/Blackwell bring-up uses `SGLANG_DIFFUSION_FLASHINFER_FP4_GEMM_BACKEND=cudnn` |
 
-These six checkpoints are also the intended case set for the B200 diffusion CI
-job (`multimodal-gen-test-1-b200`).
+These six checkpoints are also the documented regression baseline case set for
+diffusion ModelOpt smoke coverage.
 
 ## ModelOpt FP8
 
@@ -105,6 +111,9 @@ sglang generate \
   the base model config.
 - `--transformer-weights-path` still works when you intentionally point at raw
   weight files or a directory that should be metadata-probed as weights first.
+- If both override flags are set, the component config still comes from
+  `--transformer-path`, while `--transformer-weights-path` overrides the
+  safetensors payload selected for that component.
 - `dit_layerwise_offload` is supported for ModelOpt FP8 checkpoints.
 - `dit_cpu_offload` still stays disabled for ModelOpt FP8 checkpoints.
 - The layerwise offload path now preserves the non-contiguous FP8 weight stride
@@ -170,6 +179,9 @@ sglang generate \
   directories that already include `config.json`.
 - Use `--transformer-weights-path` for raw NVFP4 exports, individual
   safetensors files, or repo layouts that should be treated as weights first.
+- If both override flags are set, `--transformer-path` remains the source of
+  component config and `--transformer-weights-path` only overrides the
+  safetensors payload.
 - For dual-transformer pipelines such as `Wan2.2-T2V-A14B-Diffusers`, the
   primary `--transformer-path` override targets only `transformer`. Use a
   per-component override such as `--transformer-2-path` only when you
@@ -189,7 +201,8 @@ sglang generate \
   falls back to loading from the directory.
 - To force the generic diffusion ModelOpt FP4 path onto a specific FlashInfer
   backend, set `SGLANG_DIFFUSION_FLASHINFER_FP4_GEMM_BACKEND`. Supported values
-  include `flashinfer_cudnn`, `flashinfer_cutlass`, and `flashinfer_trtllm`.
+  include `auto`, `cudnn`, `cutlass`, `trtllm`, and the equivalent
+  `flashinfer_cudnn`, `flashinfer_cutlass`, and `flashinfer_trtllm` aliases.
 - On disk, the quantization config stays `quant_method=modelopt` with
   `quant_algo=NVFP4`; the `modelopt-nvfp4` label here is again a documentation
   family name rather than a serialized config key.

@@ -1,26 +1,25 @@
 # Copied and adapted from: https://github.com/hao-ai-lab/FastVideo
 
 # SPDX-License-Identifier: Apache-2.0
+from __future__ import annotations
+
 """
 Diffusion pipelines for sglang.multimodal_gen.
 
 This package contains diffusion pipelines for generating videos and images.
 """
 
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
-from sglang.multimodal_gen.registry import get_model_info
 from sglang.multimodal_gen.runtime.pipelines_core.composed_pipeline_base import (
     ComposedPipelineBase,
 )
 from sglang.multimodal_gen.runtime.pipelines_core.lora_pipeline import LoRAPipeline
 from sglang.multimodal_gen.runtime.pipelines_core.schedule_batch import Req
-from sglang.multimodal_gen.runtime.server_args import ServerArgs
-from sglang.multimodal_gen.runtime.utils.hf_diffusers_utils import (
-    maybe_download_model,
-    verify_model_config_and_directory,
-)
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
+
+if TYPE_CHECKING:
+    from sglang.multimodal_gen.runtime.server_args import ServerArgs
 
 logger = init_logger(__name__)
 
@@ -66,6 +65,8 @@ def build_pipeline(
         )
     else:
         logger.info("No pipeline_class_name specified, using model_index.json")
+
+        from sglang.multimodal_gen.registry import get_model_info
 
         model_info = get_model_info(
             model_path,

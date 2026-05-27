@@ -3,6 +3,7 @@ This unittest is introduced in #22360, preventing duplicate transformer safetens
 """
 
 import json
+import importlib.machinery
 import sys
 import tempfile
 import types
@@ -11,11 +12,18 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import torch
+from safetensors.torch import save_file
 
 partial_json_parser = types.ModuleType("partial_json_parser")
 partial_json_parser_core = types.ModuleType("partial_json_parser.core")
 partial_json_parser_exceptions = types.ModuleType("partial_json_parser.core.exceptions")
 partial_json_parser_options = types.ModuleType("partial_json_parser.core.options")
+torchcodec = types.ModuleType("torchcodec")
+torchcodec_decoders = types.ModuleType("torchcodec.decoders")
+torchcodec.__spec__ = importlib.machinery.ModuleSpec("torchcodec", loader=None)
+torchcodec_decoders.__spec__ = importlib.machinery.ModuleSpec(
+    "torchcodec.decoders", loader=None
+)
 
 
 class _MalformedJSON(Exception):
@@ -42,6 +50,16 @@ sys.modules.setdefault(
     "partial_json_parser.core.exceptions", partial_json_parser_exceptions
 )
 sys.modules.setdefault("partial_json_parser.core.options", partial_json_parser_options)
+# Keep these unit tests isolated from optional torchcodec native libraries.
+sys.modules.setdefault("torchcodec", torchcodec)
+sys.modules.setdefault("torchcodec.decoders", torchcodec_decoders)
+try:
+    import flashinfer
+
+    if not hasattr(flashinfer, "mm_mxfp8"):
+        flashinfer.mm_mxfp8 = lambda *args, **kwargs: None
+except Exception:
+    pass
 
 from sglang.multimodal_gen.runtime.layers.linear import UnquantizedLinearMethod
 from sglang.multimodal_gen.runtime.layers.quantization.configs.nunchaku_config import (
@@ -58,6 +76,9 @@ from sglang.multimodal_gen.runtime.loader.transformer_load_utils import (
     resolve_transformer_safetensors_to_load,
 )
 from sglang.multimodal_gen.runtime.models.dits.flux import FluxSingleTransformerBlock
+from sglang.multimodal_gen.runtime.utils.quantization_utils import (
+    build_nvfp4_config_from_safetensors_list,
+)
 from sglang.multimodal_gen.tools.build_modelopt_nvfp4_transformer import (
     _updated_quant_config,
 )
@@ -90,6 +111,18 @@ class TestTransformerQuantHelpers(unittest.TestCase):
         )
         defaults.update(overrides)
         return SimpleNamespace(**defaults)
+
+    def _write_safetensors_file(
+        self,
+        directory: str,
+        filename: str,
+        tensors: dict[str, torch.Tensor],
+        *,
+        metadata: dict[str, str] | None = None,
+    ) -> str:
+        path = f"{directory}/{filename}"
+        save_file(tensors, path, metadata=metadata)
+        return path
 
     def test_resolve_transformer_safetensors_to_load_uses_single_override_file(self):
         with tempfile.NamedTemporaryFile(suffix=".safetensors") as f:
@@ -146,6 +179,118 @@ class TestTransformerQuantHelpers(unittest.TestCase):
         resolved = _filter_duplicate_precision_variant_safetensors(files)
 
         self.assertEqual(resolved, files)
+
+    @patch(
+        "sglang.multimodal_gen.runtime.loader.transformer_load_utils.build_nvfp4_config_from_safetensors_list",
+        return_value=None,
+    )
+    @patch(
+        "sglang.multimodal_gen.runtime.loader.transformer_load_utils.get_quant_config_from_safetensors_metadata",
+        return_value=ModelOptFp4Config(
+            is_checkpoint_nvfp4_serialized=True, group_size=16
+        ),
+    )
+    def test_resolve_transformer_quant_load_spec_prefers_component_config_over_weights_metadata(
+        self,
+        mock_quant_metadata,
+        _mock_nvfp4,
+    ):
+        server_args = self._make_server_args(
+            transformer_weights_path="/tmp/override-transformer.safetensors"
+        )
+
+        spec = resolve_transformer_quant_load_spec(
+            hf_config={
+                "quantization_config": {
+                    "quant_method": "modelopt",
+                    "quant_algo": "FP8",
+                    "ignore": ["proj_out"],
+                }
+            },
+            server_args=server_args,
+            safetensors_list=["/tmp/override-transformer.safetensors"],
+            component_model_path="/unused/component/path",
+            model_cls=_FakeFluxTransformer,
+            cls_name=_FakeFluxTransformer.__name__,
+        )
+
+        self.assertEqual(type(spec.quant_config).get_name(), "modelopt_fp8")
+        self.assertEqual(spec.quant_config.exclude_modules, ["proj_out"])
+        mock_quant_metadata.assert_not_called()
+
+    @patch(
+        "sglang.multimodal_gen.runtime.loader.transformer_load_utils.build_nvfp4_config_from_safetensors_list",
+        return_value=None,
+    )
+    @patch(
+        "sglang.multimodal_gen.runtime.loader.transformer_load_utils.maybe_download_model",
+        side_effect=lambda path, **kw: path,
+    )
+    def test_resolve_transformer_quant_load_spec_reads_override_directory_config(
+        self,
+        _mock_download,
+        _mock_nvfp4,
+    ):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with open(f"{tmpdir}/config.json", "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "quantization_config": {
+                            "quant_method": "modelopt",
+                            "quant_algo": "FP8",
+                            "ignore": ["proj_out"],
+                        }
+                    },
+                    f,
+                )
+
+            server_args = self._make_server_args(transformer_weights_path=tmpdir)
+            spec = resolve_transformer_quant_load_spec(
+                hf_config={},
+                server_args=server_args,
+                safetensors_list=[f"{tmpdir}/unused.safetensors"],
+                component_model_path="/unused/component/path",
+                model_cls=_FakeFluxTransformer,
+                cls_name=_FakeFluxTransformer.__name__,
+            )
+
+        self.assertEqual(type(spec.quant_config).get_name(), "modelopt_fp8")
+        self.assertEqual(spec.quant_config.exclude_modules, ["proj_out"])
+
+    @patch(
+        "sglang.multimodal_gen.runtime.loader.transformer_load_utils.build_nvfp4_config_from_safetensors_list",
+        return_value=ModelOptFp4Config(
+            is_checkpoint_nvfp4_serialized=True,
+            group_size=16,
+            exclude_modules=["fresh.module"],
+            checkpoint_uses_packed_qkv=True,
+        ),
+    )
+    def test_resolve_transformer_quant_load_spec_prefers_safetensors_inferred_nvfp4_layout(
+        self,
+        _mock_nvfp4,
+    ):
+        spec = resolve_transformer_quant_load_spec(
+            hf_config={
+                "quantization_config": {
+                    "quant_method": "modelopt",
+                    "quant_algo": "NVFP4",
+                    "group_size": 16,
+                    "ignore": ["stale.module"],
+                    "swap_weight_nibbles": False,
+                }
+            },
+            server_args=self._make_server_args(),
+            safetensors_list=["/tmp/quantized-transformer.safetensors"],
+            component_model_path="/unused/component/path",
+            model_cls=_FakeFluxTransformer,
+            cls_name=_FakeFluxTransformer.__name__,
+        )
+
+        self.assertEqual(type(spec.quant_config).get_name(), "modelopt_fp4")
+        self.assertEqual(spec.quant_config.exclude_modules, ["fresh.module"])
+        self.assertTrue(spec.quant_config.checkpoint_uses_packed_qkv)
+        self.assertFalse(spec.quant_config.swap_weight_nibbles)
 
     @patch(
         "sglang.multimodal_gen.runtime.loader.transformer_load_utils.build_nvfp4_config_from_safetensors_list",
@@ -219,6 +364,26 @@ class TestTransformerQuantHelpers(unittest.TestCase):
         self.assertFalse(server_args.dit_cpu_offload)
         self.assertFalse(server_args.text_encoder_cpu_offload)
 
+    def test_flux2_mixed_nvfp4_fallback_disables_conflicting_offloads_for_directory_override(
+        self,
+    ):
+        server_args = self._make_server_args(
+            transformer_weights_path="/tmp/flux2-dev-nvfp4",
+            tp_size=2,
+            dit_cpu_offload=True,
+            text_encoder_cpu_offload=True,
+        )
+
+        _Flux2Nvfp4FallbackAdapter._maybe_adjust_flux2_nvfp4_fallback_defaults(
+            cls_name="Flux2Transformer2DModel",
+            server_args=server_args,
+            quant_config=_FakeQuantConfig(),
+            safetensors_list=["/tmp/flux2-dev-nvfp4/flux2-dev-nvfp4-mixed.safetensors"],
+        )
+
+        self.assertFalse(server_args.dit_cpu_offload)
+        self.assertFalse(server_args.text_encoder_cpu_offload)
+
     def test_prepare_nvfp4_weight_bytes_swaps_nibbles(self):
         weight = torch.tensor([[0xAB, 0x10]], dtype=torch.uint8)
 
@@ -258,6 +423,74 @@ class TestTransformerQuantHelpers(unittest.TestCase):
         )
 
         self.assertFalse(config.swap_weight_nibbles)
+
+    def test_modelopt_fp4_config_accepts_fp4_quant_algo_alias(self):
+        config = ModelOptFp4Config.from_config(
+            {
+                "quant_algo": "FP4",
+                "group_size": 16,
+                "ignore": [],
+            }
+        )
+
+        self.assertEqual(config.group_size, 16)
+        self.assertEqual(config.exclude_modules, [])
+
+    def test_build_nvfp4_config_from_safetensors_list_aggregates_fallback_layers(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            quantized = self._write_safetensors_file(
+                tmpdir,
+                "quantized.safetensors",
+                {
+                    "transformer.layers.0.weight": torch.zeros(
+                        (2, 4), dtype=torch.uint8
+                    ),
+                    "transformer.layers.0.weight_scale": torch.ones(
+                        (2, 2), dtype=torch.float32
+                    ),
+                },
+            )
+            fallback = self._write_safetensors_file(
+                tmpdir,
+                "fallback.safetensors",
+                {
+                    "transformer.layers.1.weight": torch.ones(
+                        (4, 8), dtype=torch.bfloat16
+                    )
+                },
+            )
+
+            config = build_nvfp4_config_from_safetensors_list([quantized, fallback])
+
+        self.assertIsNotNone(config)
+        self.assertEqual(type(config).get_name(), "modelopt_fp4")
+        self.assertEqual(config.group_size, 4)
+        self.assertEqual(config.exclude_modules, ["transformer.layers.1"])
+        self.assertFalse(config.checkpoint_uses_packed_qkv)
+
+    def test_build_nvfp4_config_from_safetensors_list_uses_fallback_group_size(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            shard = self._write_safetensors_file(
+                tmpdir,
+                "quantized.safetensors",
+                {
+                    "transformer.layers.0.weight": torch.zeros(
+                        (2, 16), dtype=torch.uint8
+                    ),
+                    "transformer.layers.0.weight_scale": torch.ones(
+                        (2, 3), dtype=torch.float32
+                    ),
+                },
+            )
+
+            config = build_nvfp4_config_from_safetensors_list(
+                [shard], fallback_group_size=16
+            )
+
+        self.assertIsNotNone(config)
+        self.assertEqual(type(config).get_name(), "modelopt_fp4")
+        self.assertEqual(config.group_size, 16)
+        self.assertEqual(config.exclude_modules, [])
 
     def test_builder_adds_diffusers_quant_type_for_nvfp4(self):
         updated = _updated_quant_config(

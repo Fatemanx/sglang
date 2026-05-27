@@ -193,7 +193,7 @@ class ModelOptFp8Config(ModelOptQuantConfig):
 
 
 class ModelOptFp4Config(ModelOptQuantConfig):
-    """Config class for NVFP4."""
+    """Config class for diffusion ModelOpt FP4/NVFP4 checkpoints."""
 
     def __init__(
         self,
@@ -288,9 +288,11 @@ class ModelOptFp4Config(ModelOptQuantConfig):
             except (ValueError, KeyError):
                 raise ValueError("Cannot find 'quant_algo' in quantization config.")
 
-        if quant_method not in ["NVFP4"]:
+        quant_method = str(quant_method).upper()
+        if quant_method not in {"NVFP4", "FP4"}:
             raise ValueError(
-                f"Only NVFP4 quantization is supported for diffusion, got '{quant_method}'."
+                "Only ModelOpt FP4/NVFP4 quantization is supported for diffusion, "
+                f"got '{quant_method}'."
             )
 
         if group_size is None or exclude_modules is None:

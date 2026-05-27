@@ -33,29 +33,44 @@ _is_hip = is_hip()
 _is_xpu = is_xpu()
 _is_musa = is_musa()
 _is_npu = is_npu()
+_GGUF_BACKEND_IMPORT_ERROR: ImportError | None = None
 
 if _is_cuda:
-    from sgl_kernel import moe_align_block_size, moe_sum
-    from sgl_kernel.quantization import (
-        ggml_dequantize,
-        ggml_moe_a8,
-        ggml_moe_a8_vec,
-        ggml_moe_get_block_size,
-        ggml_mul_mat_a8,
-        ggml_mul_mat_vec_a8,
-    )
+    try:
+        from sgl_kernel import moe_align_block_size, moe_sum
+        from sgl_kernel.quantization import (
+            ggml_dequantize,
+            ggml_moe_a8,
+            ggml_moe_a8_vec,
+            ggml_moe_get_block_size,
+            ggml_mul_mat_a8,
+            ggml_mul_mat_vec_a8,
+        )
 
-    from sglang.jit_kernel.activation import gelu_and_mul, silu_and_mul
+        from sglang.jit_kernel.activation import gelu_and_mul, silu_and_mul
+    except ImportError as exc:
+        _GGUF_BACKEND_IMPORT_ERROR = exc
+        warnings.warn(
+            "CUDA GGUF backend is unavailable because optional sgl_kernel symbols "
+            f"could not be imported: {exc}"
+        )
 elif _is_musa:
-    from sgl_kernel import gelu_and_mul, moe_align_block_size, moe_sum, silu_and_mul
-    from sgl_kernel.quantization import (
-        ggml_dequantize,
-        ggml_moe_a8,
-        ggml_moe_a8_vec,
-        ggml_moe_get_block_size,
-        ggml_mul_mat_a8,
-        ggml_mul_mat_vec_a8,
-    )
+    try:
+        from sgl_kernel import gelu_and_mul, moe_align_block_size, moe_sum, silu_and_mul
+        from sgl_kernel.quantization import (
+            ggml_dequantize,
+            ggml_moe_a8,
+            ggml_moe_a8_vec,
+            ggml_moe_get_block_size,
+            ggml_mul_mat_a8,
+            ggml_mul_mat_vec_a8,
+        )
+    except ImportError as exc:
+        _GGUF_BACKEND_IMPORT_ERROR = exc
+        warnings.warn(
+            "MUSA GGUF backend is unavailable because optional sgl_kernel symbols "
+            f"could not be imported: {exc}"
+        )
 elif _is_npu:
     from gguf import dequantize as gguf_dequantize
 else:
@@ -63,6 +78,15 @@ else:
         warnings.warn(f"Only CUDA, MUSA and NPU support GGUF quantization currently.")
 
 logger = logging.getLogger(__name__)
+
+
+def _require_gguf_backend() -> None:
+    if _GGUF_BACKEND_IMPORT_ERROR is None:
+        return
+    raise RuntimeError(
+        "GGUF quantization backend is unavailable because the optional "
+        "kernel/runtime dependencies could not be imported."
+    ) from _GGUF_BACKEND_IMPORT_ERROR
 
 
 class GGUFConfig(QuantizationConfig):
@@ -104,6 +128,7 @@ class GGUFConfig(QuantizationConfig):
     def get_quant_method(
         self, layer: torch.nn.Module, prefix: str
     ) -> Optional["QuantizeMethodBase"]:
+        _require_gguf_backend()
         from sglang.srt.layers.moe.fused_moe_triton import FusedMoE
         from sglang.srt.layers.vocab_parallel_embedding import VocabParallelEmbedding
 

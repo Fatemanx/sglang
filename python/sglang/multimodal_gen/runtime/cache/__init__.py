@@ -1,30 +1,44 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Cache acceleration module for SGLang-diffusion
+Cache acceleration module for SGLang-diffusion.
 
-This module provides various caching strategies to accelerate
-diffusion transformer (DiT) inference:
-
-- TeaCache: Temporal similarity-based caching for diffusion models
-- cache-dit integration: Block-level caching with DBCache and TaylorSeer
-
+TeaCache is always available. cache-dit integration stays lazy so importing the
+cache package does not require the optional `cache_dit` dependency unless those
+APIs are actually used.
 """
 
-from sglang.multimodal_gen.runtime.cache.cache_dit_integration import (
-    CacheDitConfig,
-    enable_cache_on_dual_transformer,
-    enable_cache_on_transformer,
-    get_scm_mask,
-)
+from typing import Any
+
 from sglang.multimodal_gen.runtime.cache.teacache import TeaCacheContext, TeaCacheMixin
 
 __all__ = [
-    # TeaCache (always available)
     "TeaCacheContext",
     "TeaCacheMixin",
-    # cache-dit integration (lazy-loaded, requires cache-dit package)
     "CacheDitConfig",
     "enable_cache_on_transformer",
     "enable_cache_on_dual_transformer",
     "get_scm_mask",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    if name in {
+        "CacheDitConfig",
+        "enable_cache_on_transformer",
+        "enable_cache_on_dual_transformer",
+        "get_scm_mask",
+    }:
+        from sglang.multimodal_gen.runtime.cache.cache_dit_integration import (
+            CacheDitConfig,
+            enable_cache_on_dual_transformer,
+            enable_cache_on_transformer,
+            get_scm_mask,
+        )
+
+        return {
+            "CacheDitConfig": CacheDitConfig,
+            "enable_cache_on_transformer": enable_cache_on_transformer,
+            "enable_cache_on_dual_transformer": enable_cache_on_dual_transformer,
+            "get_scm_mask": get_scm_mask,
+        }[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

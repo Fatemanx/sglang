@@ -1,20 +1,54 @@
-"""Unified video decoder: torchcodec preferred, decord as fallback."""
+"""Unified video decoder with lazy backend selection."""
 
+import importlib.util
 import logging
+import os
+import sys
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
-try:
-    from torchcodec.decoders import VideoDecoder
-
-    _BACKEND = "torchcodec"
-except (ImportError, RuntimeError):
-    _BACKEND = "decord"
+_BACKEND_ENV = "SGLANG_VIDEO_DECODER_BACKEND"
+_VALID_BACKENDS = {"auto", "torchcodec", "decord"}
 
 
 _cuda_backend_enabled: bool | None = None
+
+
+def _has_module(module_name: str) -> bool:
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except (ImportError, ValueError):
+        return module_name in sys.modules
+
+
+def get_video_decoder_backend() -> str:
+    backend = os.getenv(_BACKEND_ENV, "auto").lower()
+    if backend not in _VALID_BACKENDS:
+        raise ValueError(
+            f"{_BACKEND_ENV} must be one of {sorted(_VALID_BACKENDS)}, got {backend!r}"
+        )
+
+    if backend == "auto":
+        # Prefer decord in auto mode because importing torchcodec can abort the
+        # interpreter when its native libraries do not match the local PyTorch.
+        if _has_module("decord"):
+            return "decord"
+        if _has_module("torchcodec"):
+            return "torchcodec"
+    elif backend == "decord":
+        if _has_module("decord"):
+            return "decord"
+    else:
+        if _has_module("torchcodec"):
+            return "torchcodec"
+
+    raise ImportError(
+        "No supported video decoder backend is available. Install decord or "
+        "torchcodec, or set "
+        f"{_BACKEND_ENV}=decord/torchcodec to select an installed backend."
+    )
 
 
 def _try_cuda_backend() -> bool:
@@ -45,7 +79,10 @@ class VideoDecoderWrapper:
         self._source_bytes = source if isinstance(source, bytes) else None
         self._source_path = source if isinstance(source, str) else None
         self._tmp_path = None
-        if _BACKEND == "torchcodec":
+        self._backend = get_video_decoder_backend()
+        if self._backend == "torchcodec":
+            from torchcodec.decoders import VideoDecoder
+
             kwargs = {"dimension_order": "NHWC"}
             if device == "cuda" and _try_cuda_backend():
                 kwargs["device"] = "cuda"
@@ -80,7 +117,7 @@ class VideoDecoderWrapper:
 
     def __getitem__(self, idx):
         """Return single frame as numpy NHWC uint8."""
-        if _BACKEND == "torchcodec":
+        if self._backend == "torchcodec":
             return self._decoder[idx].numpy()
         else:
             frame = self._decoder[idx]
@@ -88,14 +125,14 @@ class VideoDecoderWrapper:
 
     @property
     def avg_fps(self) -> float:
-        if _BACKEND == "torchcodec":
+        if self._backend == "torchcodec":
             return self._decoder.metadata.average_fps
         else:
             return self._decoder.get_avg_fps()
 
     def get_frames_at(self, indices: list) -> np.ndarray:
         """Return frames at given indices as numpy array with shape (N, H, W, C)."""
-        if _BACKEND == "torchcodec":
+        if self._backend == "torchcodec":
             batch = self._decoder.get_frames_at(indices)
             return batch.data.numpy()
         else:
@@ -105,7 +142,7 @@ class VideoDecoderWrapper:
         """Return frames at given indices as a torch tensor (NHWC, uint8, pinned memory)."""
         import torch
 
-        if _BACKEND == "torchcodec":
+        if self._backend == "torchcodec":
             batch = self._decoder.get_frames_at(indices)
             return batch.data.pin_memory()
         else:

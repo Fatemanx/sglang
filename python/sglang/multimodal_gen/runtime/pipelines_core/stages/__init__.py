@@ -4,109 +4,148 @@
 """
 Pipeline stages for diffusion models.
 
-This package contains the various stages that can be composed to create
-complete diffusion pipelines.
+Keep stage exports lazy so importing a single pipeline path does not eagerly
+pull optional 3D/video dependencies for unrelated models.
 """
 
-from sglang.multimodal_gen.runtime.pipelines_core.stages.base import PipelineStage
-from sglang.multimodal_gen.runtime.pipelines_core.stages.causal_denoising import (
-    CausalDMDDenoisingStage,
-)
-from sglang.multimodal_gen.runtime.pipelines_core.stages.comfyui_latent_preparation import (
-    ComfyUILatentPreparationStage,
-)
-from sglang.multimodal_gen.runtime.pipelines_core.stages.decoding import DecodingStage
-from sglang.multimodal_gen.runtime.pipelines_core.stages.decoding_av import (
-    LTX2AVDecodingStage,
-)
-from sglang.multimodal_gen.runtime.pipelines_core.stages.denoising import DenoisingStage
-from sglang.multimodal_gen.runtime.pipelines_core.stages.denoising_av import (
-    LTX2AVDenoisingStage,
-    LTX2RefinementStage,
-)
-from sglang.multimodal_gen.runtime.pipelines_core.stages.denoising_dmd import (
-    DmdDenoisingStage,
-)
-from sglang.multimodal_gen.runtime.pipelines_core.stages.encoding import EncodingStage
+from __future__ import annotations
 
-# Hunyuan3D paint stages
-from sglang.multimodal_gen.runtime.pipelines_core.stages.hunyuan3d_paint import (
-    Hunyuan3DPaintPostprocessStage,
-    Hunyuan3DPaintPreprocessStage,
-    Hunyuan3DPaintTexGenStage,
-)
+from importlib import import_module
+from typing import Any
 
-# Hunyuan3D shape stages
-from sglang.multimodal_gen.runtime.pipelines_core.stages.hunyuan3d_shape import (
-    Hunyuan3DShapeBeforeDenoisingStage,
-    Hunyuan3DShapeDenoisingStage,
-    Hunyuan3DShapeExportStage,
-    Hunyuan3DShapeSaveStage,
-)
-from sglang.multimodal_gen.runtime.pipelines_core.stages.image_encoding import (
-    ImageEncodingStage,
-    ImageVAEEncodingStage,
-    LTX2ImageEncodingStage,
-)
-from sglang.multimodal_gen.runtime.pipelines_core.stages.input_validation import (
-    InputValidationStage,
-)
-from sglang.multimodal_gen.runtime.pipelines_core.stages.latent_preparation import (
-    LatentPreparationStage,
-)
-from sglang.multimodal_gen.runtime.pipelines_core.stages.latent_preparation_av import (
-    LTX2AVLatentPreparationStage,
-)
-from sglang.multimodal_gen.runtime.pipelines_core.stages.ltx_2_denoising import (
-    LTX2DenoisingStage,
-)
-from sglang.multimodal_gen.runtime.pipelines_core.stages.text_connector import (
-    LTX2TextConnectorStage,
-)
-from sglang.multimodal_gen.runtime.pipelines_core.stages.text_encoding import (
-    TextEncodingStage,
-)
-from sglang.multimodal_gen.runtime.pipelines_core.stages.timestep_preparation import (
-    TimestepPreparationStage,
-)
-from sglang.multimodal_gen.runtime.pipelines_core.stages.upsampling import (
-    LTX2HalveResolutionStage,
-    LTX2LoRASwitchStage,
-    LTX2UpsampleStage,
-)
+_STAGE_EXPORTS = {
+    "PipelineStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.base",
+        "PipelineStage",
+    ),
+    "CausalDMDDenoisingStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.causal_denoising",
+        "CausalDMDDenoisingStage",
+    ),
+    "ComfyUILatentPreparationStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.comfyui_latent_preparation",
+        "ComfyUILatentPreparationStage",
+    ),
+    "DecodingStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.decoding",
+        "DecodingStage",
+    ),
+    "LTX2AVDecodingStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.decoding_av",
+        "LTX2AVDecodingStage",
+    ),
+    "DenoisingStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.denoising",
+        "DenoisingStage",
+    ),
+    "LTX2AVDenoisingStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.denoising_av",
+        "LTX2AVDenoisingStage",
+    ),
+    "LTX2RefinementStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.denoising_av",
+        "LTX2RefinementStage",
+    ),
+    "DmdDenoisingStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.denoising_dmd",
+        "DmdDenoisingStage",
+    ),
+    "EncodingStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.encoding",
+        "EncodingStage",
+    ),
+    "Hunyuan3DPaintPostprocessStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.hunyuan3d_paint",
+        "Hunyuan3DPaintPostprocessStage",
+    ),
+    "Hunyuan3DPaintPreprocessStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.hunyuan3d_paint",
+        "Hunyuan3DPaintPreprocessStage",
+    ),
+    "Hunyuan3DPaintTexGenStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.hunyuan3d_paint",
+        "Hunyuan3DPaintTexGenStage",
+    ),
+    "Hunyuan3DShapeBeforeDenoisingStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.hunyuan3d_shape",
+        "Hunyuan3DShapeBeforeDenoisingStage",
+    ),
+    "Hunyuan3DShapeDenoisingStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.hunyuan3d_shape",
+        "Hunyuan3DShapeDenoisingStage",
+    ),
+    "Hunyuan3DShapeExportStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.hunyuan3d_shape",
+        "Hunyuan3DShapeExportStage",
+    ),
+    "Hunyuan3DShapeSaveStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.hunyuan3d_shape",
+        "Hunyuan3DShapeSaveStage",
+    ),
+    "ImageEncodingStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.image_encoding",
+        "ImageEncodingStage",
+    ),
+    "ImageVAEEncodingStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.image_encoding",
+        "ImageVAEEncodingStage",
+    ),
+    "LTX2ImageEncodingStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.image_encoding",
+        "LTX2ImageEncodingStage",
+    ),
+    "InputValidationStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.input_validation",
+        "InputValidationStage",
+    ),
+    "LatentPreparationStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.latent_preparation",
+        "LatentPreparationStage",
+    ),
+    "LTX2AVLatentPreparationStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.latent_preparation_av",
+        "LTX2AVLatentPreparationStage",
+    ),
+    "LTX2DenoisingStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.ltx_2_denoising",
+        "LTX2DenoisingStage",
+    ),
+    "LTX2TextConnectorStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.text_connector",
+        "LTX2TextConnectorStage",
+    ),
+    "TextEncodingStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.text_encoding",
+        "TextEncodingStage",
+    ),
+    "TimestepPreparationStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.timestep_preparation",
+        "TimestepPreparationStage",
+    ),
+    "LTX2HalveResolutionStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.upsampling",
+        "LTX2HalveResolutionStage",
+    ),
+    "LTX2LoRASwitchStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.upsampling",
+        "LTX2LoRASwitchStage",
+    ),
+    "LTX2UpsampleStage": (
+        "sglang.multimodal_gen.runtime.pipelines_core.stages.upsampling",
+        "LTX2UpsampleStage",
+    ),
+}
 
-__all__ = [
-    "PipelineStage",
-    "InputValidationStage",
-    "TimestepPreparationStage",
-    "LatentPreparationStage",
-    "ComfyUILatentPreparationStage",
-    "LTX2AVLatentPreparationStage",
-    "DenoisingStage",
-    "DmdDenoisingStage",
-    "LTX2DenoisingStage",
-    "LTX2AVDenoisingStage",
-    "CausalDMDDenoisingStage",
-    "EncodingStage",
-    "DecodingStage",
-    "LTX2AVDecodingStage",
-    "ImageEncodingStage",
-    "ImageVAEEncodingStage",
-    "LTX2ImageEncodingStage",
-    "TextEncodingStage",
-    "LTX2TextConnectorStage",
-    # Hunyuan3D shape stages
-    "Hunyuan3DShapeBeforeDenoisingStage",
-    "Hunyuan3DShapeDenoisingStage",
-    "Hunyuan3DShapeExportStage",
-    "Hunyuan3DShapeSaveStage",
-    # Hunyuan3D paint stages
-    "Hunyuan3DPaintPreprocessStage",
-    "Hunyuan3DPaintTexGenStage",
-    "Hunyuan3DPaintPostprocessStage",
-    # LTX-2 two-stage
-    "LTX2RefinementStage",
-    "LTX2HalveResolutionStage",
-    "LTX2LoRASwitchStage",
-    "LTX2UpsampleStage",
-]
+__all__ = list(_STAGE_EXPORTS)
+
+
+def __getattr__(name: str) -> Any:
+    try:
+        module_name, attr_name = _STAGE_EXPORTS[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+
+    module = import_module(module_name)
+    value = getattr(module, attr_name)
+    globals()[name] = value
+    return value

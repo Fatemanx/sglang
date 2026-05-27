@@ -1,7 +1,27 @@
 from contextlib import nullcontext
+import importlib.machinery
 from types import SimpleNamespace
+import sys
+import types
 
 import torch
+
+# Keep these unit tests isolated from optional torchcodec native libraries.
+torchcodec = types.ModuleType("torchcodec")
+torchcodec_decoders = types.ModuleType("torchcodec.decoders")
+torchcodec.__spec__ = importlib.machinery.ModuleSpec("torchcodec", loader=None)
+torchcodec_decoders.__spec__ = importlib.machinery.ModuleSpec(
+    "torchcodec.decoders", loader=None
+)
+sys.modules.setdefault("torchcodec", torchcodec)
+sys.modules.setdefault("torchcodec.decoders", torchcodec_decoders)
+try:
+    import flashinfer
+
+    if not hasattr(flashinfer, "mm_mxfp8"):
+        flashinfer.mm_mxfp8 = lambda *args, **kwargs: None
+except Exception:
+    pass
 
 from sglang.multimodal_gen.runtime.layers.quantization.modelopt_quant import (
     ModelOptFp8Config,

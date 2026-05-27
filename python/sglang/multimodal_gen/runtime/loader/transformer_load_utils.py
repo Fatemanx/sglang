@@ -177,16 +177,19 @@ class _Flux2Nvfp4FallbackAdapter(_TransformerQuantAdapter):
         cls_name: str,
         server_args: ServerArgs,
         quant_config: Optional[QuantizationConfig],
+        safetensors_list: list[str],
     ) -> None:
         self.cls_name = cls_name
         self.server_args = server_args
         self.quant_config = quant_config
+        self.safetensors_list = safetensors_list
 
     @staticmethod
     def _maybe_adjust_flux2_nvfp4_fallback_defaults(
         cls_name: str,
         server_args: ServerArgs,
         quant_config: Optional[QuantizationConfig],
+        safetensors_list: Optional[list[str]] = None,
     ) -> None:
         if cls_name != "Flux2Transformer2DModel" or quant_config is None:
             return
@@ -196,8 +199,15 @@ class _Flux2Nvfp4FallbackAdapter(_TransformerQuantAdapter):
         if quant_name != "modelopt_fp4":
             return
 
-        weights_path = os.path.basename(server_args.transformer_weights_path or "")
-        if not weights_path.endswith("-mixed.safetensors") or server_args.tp_size <= 1:
+        uses_mixed_export = any(
+            _MIXED_SAFETENSORS_RE.match(os.path.basename(path))
+            for path in (safetensors_list or [])
+        )
+        if not uses_mixed_export:
+            weights_path = os.path.basename(server_args.transformer_weights_path or "")
+            uses_mixed_export = weights_path.endswith("-mixed.safetensors")
+
+        if not uses_mixed_export or server_args.tp_size <= 1:
             return
 
         if server_args.dit_cpu_offload or server_args.text_encoder_cpu_offload:
@@ -216,6 +226,7 @@ class _Flux2Nvfp4FallbackAdapter(_TransformerQuantAdapter):
             cls_name=self.cls_name,
             server_args=self.server_args,
             quant_config=self.quant_config,
+            safetensors_list=self.safetensors_list,
         )
 
 
@@ -416,6 +427,7 @@ def _build_transformer_quant_adapters(
             cls_name=cls_name,
             server_args=server_args,
             quant_config=quant_config,
+            safetensors_list=safetensors_list,
         ),
         _ModelOptFp8OffloadAdapter(
             server_args=server_args,

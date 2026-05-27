@@ -92,7 +92,10 @@ from typing_extensions import Literal
 
 from sglang.srt.environ import envs
 from sglang.srt.observability.func_timer import enable_func_timer
-from sglang.srt.utils.video_decoder import _BACKEND, VideoDecoderWrapper
+from sglang.srt.utils.video_decoder import (
+    VideoDecoderWrapper,
+    get_video_decoder_backend,
+)
 
 if TYPE_CHECKING:
     from sglang.srt.server_args import ServerArgs
@@ -739,7 +742,7 @@ def load_audio(
     else:
         raise ValueError(f"Invalid audio format: {audio_file}")
 
-    if _BACKEND == "torchcodec":
+    if get_video_decoder_backend() == "torchcodec":
         from torchcodec.decoders import AudioDecoder
 
         decoder = AudioDecoder(

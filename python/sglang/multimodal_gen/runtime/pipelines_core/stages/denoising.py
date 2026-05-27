@@ -27,14 +27,6 @@ from sglang.multimodal_gen.configs.pipeline_configs.flux import (
     FluxPipelineConfig,
 )
 from sglang.multimodal_gen.configs.pipeline_configs.zimage import ZImagePipelineConfig
-from sglang.multimodal_gen.runtime.cache.cache_dit_integration import (
-    CacheDitConfig,
-    enable_cache_on_dual_transformer,
-    enable_cache_on_transformer,
-    get_scm_mask,
-    refresh_context_on_dual_transformer,
-    refresh_context_on_transformer,
-)
 from sglang.multimodal_gen.runtime.disaggregation.roles import RoleType
 from sglang.multimodal_gen.runtime.distributed import (
     cfg_model_parallel_all_reduce,
@@ -95,6 +87,35 @@ from sglang.multimodal_gen.utils import PRECISION_TO_TYPE, dict_to_3d_list
 from sglang.srt.utils.common import get_compiler_backend
 
 logger = init_logger(__name__)
+
+
+def _get_cache_dit_api():
+    try:
+        from sglang.multimodal_gen.runtime.cache.cache_dit_integration import (
+            CacheDitConfig,
+            enable_cache_on_dual_transformer,
+            enable_cache_on_transformer,
+            get_scm_mask,
+            refresh_context_on_dual_transformer,
+            refresh_context_on_transformer,
+        )
+    except ModuleNotFoundError as exc:
+        if exc.name == "cache_dit":
+            raise ModuleNotFoundError(
+                "cache_dit is required only when cache-dit acceleration is enabled. "
+                "Install the optional cache_dit dependency or disable "
+                "SGLANG_CACHE_DIT_ENABLED."
+            ) from exc
+        raise
+
+    return (
+        CacheDitConfig,
+        enable_cache_on_dual_transformer,
+        enable_cache_on_transformer,
+        get_scm_mask,
+        refresh_context_on_dual_transformer,
+        refresh_context_on_transformer,
+    )
 
 
 @dataclass(slots=True)
@@ -302,8 +323,18 @@ class DenoisingStage(PipelineStage, RolloutDenoisingMixin):
         if isinstance(num_inference_steps, tuple):
             num_high_noise_steps, num_low_noise_steps = num_inference_steps
 
+        cache_dit_api = None
         # NOTE: When a new request arrives, we need to refresh the cache-dit context.
         if self._cache_dit_enabled:
+            cache_dit_api = _get_cache_dit_api()
+            (
+                _CacheDitConfig,
+                _enable_cache_on_dual_transformer,
+                _enable_cache_on_transformer,
+                _get_scm_mask,
+                refresh_context_on_dual_transformer,
+                refresh_context_on_transformer,
+            ) = cache_dit_api
             scm_preset = envs.SGLANG_CACHE_DIT_SCM_PRESET
             scm_preset = None if scm_preset == "none" else scm_preset
             if isinstance(num_inference_steps, tuple):
@@ -325,6 +356,17 @@ class DenoisingStage(PipelineStage, RolloutDenoisingMixin):
         # check if cache-dit is enabled in config
         if not envs.SGLANG_CACHE_DIT_ENABLED or batch.is_warmup:
             return
+
+        if cache_dit_api is None:
+            cache_dit_api = _get_cache_dit_api()
+        (
+            CacheDitConfig,
+            enable_cache_on_dual_transformer,
+            enable_cache_on_transformer,
+            get_scm_mask,
+            _refresh_context_on_dual_transformer,
+            _refresh_context_on_transformer,
+        ) = cache_dit_api
 
         world_size = get_world_size()
         parallelized = world_size > 1
